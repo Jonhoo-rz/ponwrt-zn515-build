@@ -111,6 +111,25 @@ jobs:
           PY
           cp .config build-record/config.full
           ./scripts/diffconfig.sh > build-record/config.diff
+      - name: Skip unused Python ctypes module
+        run: |
+          if grep -Eq '^CONFIG_PACKAGE_(python3-ctypes|libffi)=[ym]$' .config; then
+            echo 'Python ctypes or libffi is selected; cannot skip it' >&2
+            exit 1
+          fi
+          python3 - <<'PY'
+          from pathlib import Path
+          path = Path('feeds/packages/lang/python/python3/Makefile')
+          source = path.read_text()
+          marker = 'py_cv_module_nis=n/a'
+          assert source.count(marker) == 1, 'Python package rules changed'
+          source = source.replace(marker, marker + ' \\\n\tpy_cv_module__ctypes=n/a', 1)
+          path.write_text(source)
+          PY
+          git -C feeds/packages diff -- lang/python/python3/Makefile > build-record/python3-ctypes-workaround.patch
+          test -s build-record/python3-ctypes-workaround.patch
+
+
 
       - name: Download sources
         run: make download -j"$(nproc)" 2>&1 | tee build-record/download.log
