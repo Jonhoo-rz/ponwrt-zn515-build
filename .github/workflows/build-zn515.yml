@@ -77,13 +77,20 @@ jobs:
           import re
           p = Path('.config')
           selected = 'CONFIG_TARGET_DEVICE_airoha_an7581_DEVICE_znxt_zn515xg-d'
+          unpublished_feeds = ('video', 'pon_drivers', 'pon_userspace')
+          unpublished_feed_options = {f'CONFIG_FEED_{feed}=y' for feed in unpublished_feeds}
+          source = p.read_text()
+          for feed in unpublished_feeds:
+              assert source.count(f'CONFIG_FEED_{feed}=y') == 1, feed
           out, seen = [], set()
-          for line in p.read_text().splitlines():
+          for line in source.splitlines():
               m = re.fullmatch(r'(CONFIG_TARGET_DEVICE_(?!PACKAGES_)[^=]+)=[ym]', line)
               if m:
                   key = m.group(1)
                   out.append(f'{key}=y' if key == selected else f'# {key} is not set')
                   seen.add(key)
+              elif line in unpublished_feed_options:
+                  out.append(f'# {line.partition("=")[0]} is not set')
               elif line == 'CONFIG_TARGET_ALL_PROFILES=y':
                   out.append('# CONFIG_TARGET_ALL_PROFILES is not set')
               else:
@@ -98,6 +105,10 @@ jobs:
           text = Path('.config').read_text()
           devices = re.findall(r'^CONFIG_TARGET_DEVICE_(?!PACKAGES_)([^=]+)=y$', text, re.M)
           assert devices == ['airoha_an7581_DEVICE_znxt_zn515xg-d'], devices
+          for feed in ('packages', 'luci', 'routing', 'telephony'):
+              assert re.search(r'^CONFIG_FEED_' + feed + '=y$', text, re.M), feed
+          for feed in ('video', 'pon_drivers', 'pon_userspace'):
+              assert not re.search(r'^CONFIG_FEED_' + feed + '=[ym]$', text, re.M), feed
           for key in ['TARGET_airoha', 'TARGET_airoha_an7581', 'TARGET_MULTI_PROFILE',
                       'TARGET_PER_DEVICE_ROOTFS', 'PACKAGE_luci', 'PACKAGE_luci-app-pon',
                       'PACKAGE_luci-i18n-base-zh-cn', 'PACKAGE_airoha-ponctl', 'PACKAGE_airoha-pond']:
