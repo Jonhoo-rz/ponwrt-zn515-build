@@ -240,8 +240,12 @@ jobs:
               names.append(path.name)
           assert any('squashfs-sysupgrade.itb' in name for name in names), names
           assert any('initramfs-recovery.itb' in name for name in names), names
-          manifests = [path for path in root.glob('*zn515xg-d*.manifest') if '10g' not in path.name]
-          assert manifests, 'ZN515 package manifest missing'
+          # include/image.mk uses IMG_PREFIX plus optional PROFILE_SANITIZED.
+          # With MULTI_PROFILE, the common manifest need not include the model.
+          # profiles.json above already proves only the standard ZN515 was built.
+          manifests = sorted(root.glob('*.manifest'))
+          assert len(manifests) == 1, f'Expected one package manifest: {manifests}; files: {sorted(p.name for p in root.iterdir())}'
+          print('Checking package manifest:', manifests[0].name)
           required = {'ua3f', 'luci-compat', 'libubox-lua', 'ip-full',
                       'firewall4', 'nftables-json', 'kmod-nft-tproxy',
                       'kmod-nf-tproxy', 'kmod-nf-conntrack-netlink'}
@@ -257,13 +261,11 @@ jobs:
           shutil.copy2(kernels[0], 'build-record/kernel.config')
           for name in ['profiles.json', 'version.buildinfo', 'config.buildinfo', 'feeds.buildinfo']:
               shutil.copy2(root / name, 'firmware')
-          for path in root.glob('*zn515xg-d*.manifest'):
+          for path in manifests:
               shutil.copy2(path, 'firmware')
-          for path in root.glob('*.manifest'):
-              if 'zn515xg-d' in path.name and '10g' not in path.name:
-                  text = path.read_text()
-                  for unwanted in ['luci-app-passwall', 'luci-app-openclash', 'luci-app-rclone', 'dockerd']:
-                      assert unwanted not in text, unwanted
+              packages = {line.split(' - ', 1)[0] for line in path.read_text().splitlines()}
+              for unwanted in ['luci-app-passwall', 'luci-app-openclash', 'luci-app-rclone', 'dockerd']:
+                  assert unwanted not in packages, unwanted
           print('Validated:', data['version_code'], names)
           PY
           cp build-record/source-sha.txt build-record/feed-shas.txt build-record/ua3f-sha.txt firmware/
@@ -285,6 +287,10 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           name: zn515-ua3f-build-record-${{ github.run_number }}
-          path: build-record/
+          path: |
+            build-record/
+            bin/targets/airoha/an7581/*.manifest
+            bin/targets/airoha/an7581/*.json
+            bin/targets/airoha/an7581/*.buildinfo
           if-no-files-found: warn
           retention-days: 7
