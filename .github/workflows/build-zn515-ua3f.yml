@@ -36,7 +36,14 @@ jobs:
         env:
           DEBIAN_FRONTEND: noninteractive
         run: |
-          sudo rm -rf /usr/share/dotnet /usr/local/lib/android /opt/ghc
+          # This job uses a disposable GitHub-hosted Ubuntu VM. OpenWrt builds
+          # its own toolchains; the preinstalled SDK cache is not required.
+          df -h .
+          sudo rm -rf /usr/share/dotnet /usr/local/lib/android /opt/ghc \
+            /opt/hostedtoolcache /usr/local/.ghcup /usr/share/swift
+          if command -v docker >/dev/null 2>&1; then
+            sudo docker image prune --all --force || true
+          fi
           sudo apt-get clean
           sudo apt-get update
           sudo apt-get install -y --no-install-recommends \
@@ -49,7 +56,14 @@ jobs:
             python3 python3-docutils python3-pip python3-ply python3-pyelftools \
             qemu-utils re2c rsync scons squashfs-tools subversion swig texinfo \
             uglifyjs unzip wget xmlto xxd zlib1g-dev zstd
+          sudo apt-get clean
           mkdir -p build-record firmware
+          available_kib=$(df --output=avail -k . | tail -n 1)
+          if [ "$available_kib" -lt $((30 * 1024 * 1024)) ]; then
+            df -h . | tee build-record/disk-too-small.txt
+            echo '::error::Need at least 30 GiB free after runner cleanup for the full PonWrt + Go build.'
+            exit 1
+          fi
           test "$(git rev-parse HEAD)" = "$SOURCE_SHA"
           git checkout -B zn515-source "$SOURCE_SHA"
           git branch --set-upstream-to=origin/master zn515-source
@@ -107,6 +121,12 @@ jobs:
                   key = m.group(1)
                   out.append(f'{key}=y' if key == selected else f'# {key} is not set')
                   seen.add(key)
+              elif line in ('CONFIG_KERNEL_DEBUG_INFO=y',
+                            'CONFIG_KERNEL_DEBUG_INFO_REDUCED=y',
+                            'CONFIG_KERNEL_DEBUG_INFO_BTF=y',
+                            'CONFIG_COLLECT_KERNEL_DEBUG=y'):
+                  # Runtime TPROXY support does not require DWARF/BTF symbols.
+                  out.append(f'# {line.partition("=")[0]} is not set')
               elif line in unpublished_feed_options:
                   out.append(f'# {line.partition("=")[0]} is not set')
               elif line == 'CONFIG_TARGET_ALL_PROFILES=y':
@@ -126,6 +146,8 @@ jobs:
           for line in Path('configs/zn515-ua3f.config').read_text().splitlines():
               if line.startswith('CONFIG_'):
                   assert line in text.splitlines(), f'Required UA3F option lost: {line}'
+          for key in ('KERNEL_DEBUG_INFO', 'KERNEL_DEBUG_INFO_BTF', 'COLLECT_KERNEL_DEBUG'):
+              assert f'CONFIG_{key}=y' not in text.splitlines(), key
           devices = re.findall(r'^CONFIG_TARGET_DEVICE_(?!PACKAGES_)([^=]+)=y$', text, re.M)
           assert devices == ['airoha_an7581_DEVICE_znxt_zn515xg-d'], devices
           for feed in ('packages', 'luci', 'routing', 'telephony'):
@@ -170,7 +192,28 @@ jobs:
 
       - name: Compile firmware
         run: |
+          df -h . | tee build-record/disk-before-build.txt
+          available_kib=$(df --output=avail -k . | tail -n 1)
+          if [ "$available_kib" -lt $((20 * 1024 * 1024)) ]; then
+            echo '::error::Less than 20 GiB free before compilation; stopping early to preserve logs.'
+            exit 1
+          fi
+          (
+            while true; do
+              date -u
+              df -h .
+              sleep 60
+            done
+          ) > build-record/disk-during-build.log 2>&1 &
+          monitor_pid=$!
+          trap 'kill "$monitor_pid" 2>/dev/null || true' EXIT
           if ! make -j"$(nproc)" 2>&1 | tee build-record/build.log; then
+            df -h . | tee build-record/disk-after-failure.txt
+            available_kib=$(df --output=avail -k . | tail -n 1)
+            if [ "$available_kib" -lt $((5 * 1024 * 1024)) ]; then
+              echo '::error::Build exhausted disk space; skipping retry to preserve remaining space.'
+              exit 1
+            fi
             make -j1 V=s 2>&1 | tee build-record/build-retry.log
           fi
 
